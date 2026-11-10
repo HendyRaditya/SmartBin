@@ -87,6 +87,10 @@ Additional project documentation is available in the `docs/` directory:
 
 The 3D model is available in the `hardware/` directory.
 
+## Circuit Diagram
+
+![SmartBin Wiring Diagram](docs/circuit-diagram/SmartBin%20Wiring%20Diagram_bb.png)
+
 ## Dataset
 
 The `dataset/` directory contains image samples used for the waste classification project.
