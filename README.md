@@ -101,6 +101,15 @@ The `dataset/` directory contains image samples used for the waste classificatio
 
 This repository represents the first prototype of SmartBin. Further improvements and hardware integration may be developed in future versions.
 
+## Development Notes
+
+The ESP32-CAM runs the Edge Impulse
+inference model independently.
+
+Communication between the ESP32-CAM
+and the main ESP32 controller is not
+implemented in Prototype V1.
+
 ## License
 
 This project is licensed under the MIT License. See the `LICENSE` file for details.
