@@ -1,132 +1,159 @@
+#include <Arduino.h>
 #include <WiFi.h>
-#include "esp_camera.h"
+#include <WebServer.h>
 #include <ESP32Servo.h>
-#include "edge-impulse-sdk/classifier/ei_run_classifier.h"
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <LittleFS.h>
+#include <time.h>  // For real-time timestamp
 
-// ==== WiFi ====
-const char* ssid = "NAMA_WIFI";
-const char* password = "PASSWORD_WIFI";
+// ---------------- WIFI CONFIG ----------------
+const char* ssid = "jambi";
+const char* password = "hendy2009";
 
-// ==== IR Sensor ====
-const int IR_PIN = 33; // pin IR sensor OUT
+// ---------------- NTP CONFIG (TIME) ----------------
+const char* ntpServer = "pool.ntp.org";
+const long gmtOffset_sec = 8 * 3600;  // GMT+8
+const int daylightOffset_sec = 0;
 
-// ==== Servo Pemilah ====
-Servo servoPemilah;
-const int SERVO_PIN = 14;
-const int POS_TENGAH = 90;
-const int POS_BOTOL = 135;
-const int POS_KRESEK = 45;
+// ---------------- LCD INIT ----------------
+LiquidCrystal_I2C lcd(0x27, 16, 2);
 
-// ==== Ultrasonik ====
-const int TRIG_BOTOL = 12;
-const int ECHO_BOTOL = 13;
-const int TRIG_KRESEK = 15;
-const int ECHO_KRESEK = 2;
+// ---------------- SENSOR & SERVO PINS ----------------
+const int IR_PIN = 26;
+const int SERVO_MOUTH_PIN = 27;
+const int SERVO_SORTER_PIN = 25;
+const int TRIG_ORGANIC = 32;
+const int ECHO_ORGANIC = 33;
+const int TRIG_NONORGANIC = 14;
+const int ECHO_NONORGANIC = 12;
 
-long lastDistBotol = 0;
-long lastDistKresek = 0;
-const float MAX_HEIGHT = 50.0; // cm
+// ---------------- SERVO POSITIONS ----------------
+Servo servoMouth, servoSorter;
+const int POS_CENTER = 90;
+const int POS_ORGANIC = 20;
+const int POS_NONORGANIC = 160;
 
-// ==== Kamera ====
-#define PWDN_GPIO_NUM     -1
-#define RESET_GPIO_NUM    -1
-#define XCLK_GPIO_NUM      0
-#define SIOD_GPIO_NUM     26
-#define SIOC_GPIO_NUM     27
-#define Y9_GPIO_NUM       35
-#define Y8_GPIO_NUM       34
-#define Y7_GPIO_NUM       39
-#define Y6_GPIO_NUM       36
-#define Y5_GPIO_NUM       21
-#define Y4_GPIO_NUM       19
-#define Y3_GPIO_NUM       18
-#define Y2_GPIO_NUM        5
-#define VSYNC_GPIO_NUM    25
-#define HREF_GPIO_NUM     23
-#define PCLK_GPIO_NUM     22
+// ---------------- WEBSERVER ----------------
+WebServer server(80);
 
-WiFiServer server(80);
-camera_fb_t *fb = NULL;
+// ---------------- DATA VARIABLES ----------------
+String lastTime = "None";
+String wasteType = "-";
+int organicCapacity = 0;
+int inorganicCapacity = 0;
 
-// baca ultrasonic
+// ---------------- TIME FUNCTION ----------------
+String getTimestamp() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    return "NTP Failed";
+  }
+  char timeString[30];
+  strftime(timeString, sizeof(timeString), "%d-%m-%Y %H:%M:%S", &timeinfo);
+  return String(timeString);
+}
+
+// ---------------- ULTRASONIC FUNCTION ----------------
 long readUltrasonic(int trigPin, int echoPin) {
   digitalWrite(trigPin, LOW);
   delayMicroseconds(2);
   digitalWrite(trigPin, HIGH);
   delayMicroseconds(10);
   digitalWrite(trigPin, LOW);
+
   long duration = pulseIn(echoPin, HIGH, 30000);
   long distance = duration * 0.034 / 2;
   return distance;
 }
 
-void setup() {
-  Serial.begin(115200);
-
-  // WiFi
-  WiFi.begin(ssid, password);
-  Serial.print("Menghubungkan WiFi");
-  while (WiFi.status() != WL_CONNECTED) {
-    delay(500); Serial.print(".");
-  }
-  Serial.println("\nWiFi terhubung");
-  Serial.print("IP Address: "); Serial.println(WiFi.localIP());
-
-  server.begin();
-
-  // Servo pemilah
-  servoPemilah.attach(SERVO_PIN);
-  servoPemilah.write(POS_TENGAH);
-
-  // Ultrasonik
-  pinMode(TRIG_BOTOL, OUTPUT); pinMode(ECHO_BOTOL, INPUT);
-  pinMode(TRIG_KRESEK, OUTPUT); pinMode(ECHO_KRESEK, INPUT);
-
-  // IR sensor
-  pinMode(IR_PIN, INPUT);
-
-  // Konfigurasi kamera
-  camera_config_t config;
-  config.ledc_channel = LEDC_CHANNEL_0;
-  config.ledc_timer   = LEDC_TIMER_0;
-  config.pin_d0       = Y2_GPIO_NUM;
-  config.pin_d1       = Y3_GPIO_NUM;
-  config.pin_d2       = Y4_GPIO_NUM;
-  config.pin_d3       = Y5_GPIO_NUM;
-  config.pin_d4       = Y6_GPIO_NUM;
-  config.pin_d5       = Y7_GPIO_NUM;
-  config.pin_d6       = Y8_GPIO_NUM;
-  config.pin_d7       = Y9_GPIO_NUM;
-  config.pin_xclk     = XCLK_GPIO_NUM;
-  config.pin_pclk     = PCLK_GPIO_NUM;
-  config.pin_vsync    = VSYNC_GPIO_NUM;
-  config.pin_href     = HREF_GPIO_NUM;
-  config.pin_sscb_sda = SIOD_GPIO_NUM;
-  config.pin_sscb_scl = SIOC_GPIO_NUM;
-  config.pin_pwdn     = PWDN_GPIO_NUM;
-  config.pin_reset    = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 20000000;
-  config.pixel_format = PIXFORMAT_RGB565; 
-  config.frame_size   = FRAMESIZE_QVGA;
-  config.jpeg_quality = 12;
-  config.fb_count     = 1;
-
-  esp_err_t err = esp_camera_init(&config);
-  if (err != ESP_OK) {
-    Serial.printf("Kamera gagal diinisialisasi, kode error 0x%x", err);
-    return;
-  }
-  Serial.println("Kamera siap.");
+int calcCapacity(long dist) {
+  if (dist <= 0) return 0;
+  if (dist >= 25) return 0;
+  int cap = map(dist, 25, 0, 0, 100);
+  if (cap < 0) cap = 0;
+  if (cap > 100) cap = 100;
+  return cap;
 }
 
+// ---------------- WEB HANDLERS ----------------
+void handleRoot() {
+  File file = LittleFS.open("/index.html", "r");
+  server.streamFile(file, "text/html");
+  file.close();
+}
+
+void handleData() {
+  String json = "{";
+  json += "\"time\":\"" + lastTime + "\",";
+  json += "\"type\":\"" + wasteType + "\",";
+  json += "\"organic_capacity\":" + String(organicCapacity) + ",";
+  json += "\"inorganic_capacity\":" + String(inorganicCapacity);
+  json += "}";
+  server.send(200, "application/json", json);
+}
+
+// ---------------- SETUP ----------------
+void setup() {
+  Serial.begin(115200);
+  Wire.begin(21, 22);
+
+  // LCD setup
+  lcd.init();
+  lcd.backlight();
+  lcd.setCursor(0, 0);
+  lcd.print("Insert trash");
+
+  // WiFi setup
+  WiFi.begin(ssid, password);
+  Serial.print("Connecting to WiFi");
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("\nConnected to WiFi");
+  Serial.print("IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // NTP time setup
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+  Serial.println("NTP time synchronized.");
+
+  // Filesystem setup
+  if (!LittleFS.begin(true)) {
+    Serial.println("Failed to mount LittleFS!");
+    return;
+  }
+
+  // Web server routes
+  server.on("/", handleRoot);
+  server.on("/data", handleData);
+  server.begin();
+  Serial.println("Web server running.");
+
+  // Initialize sensors & servos
+  pinMode(IR_PIN, INPUT);
+  pinMode(TRIG_ORGANIC, OUTPUT);
+  pinMode(ECHO_ORGANIC, INPUT);
+  pinMode(TRIG_NONORGANIC, OUTPUT);
+  pinMode(ECHO_NONORGANIC, INPUT);
+
+  servoMouth.attach(SERVO_MOUTH_PIN);
+  servoSorter.attach(SERVO_SORTER_PIN);
+  servoSorter.write(POS_CENTER);
+}
+
+// ---------------- LOOP ----------------
 void loop() {
-  int irState = digitalRead(IR_PIN);
+  server.handleClient();
 
-  // hanya proses klasifikasi kalau IR mendeteksi sampah
-  if (irState == LOW) { // LOW = objek terdeteksi
-    Serial.println("🚮 Sampah terdeteksi oleh IR, memulai klasifikasi kamera...");
+  if (digitalRead(IR_PIN) == LOW) {
+    Serial.println("Waste detected");
 
-    delay(500); // beri jeda 0.5 detik agar pintu/gerakan tidak terbaca IR
+    lcd.clear();
+    lcd.print("Classifying...");
+    delay(3000);
+
 
     fb = esp_camera_fb_get();
     if (!fb) {
@@ -160,33 +187,54 @@ void loop() {
     Serial.print(" (");
     Serial.print(max_val * 100, 2);
     Serial.println("%)");
-
-    // Gerakkan servo sesuai hasil klasifikasi
-    if (best_label == "Botol") {
-      servoPemilah.write(POS_BOTOL);
-      Serial.println("Servo ke posisi BOTOL");
-    } else if (best_label == "Kresek") {
-      servoPemilah.write(POS_KRESEK);
-      Serial.println("Servo ke posisi KRESEK");
+    
+    if (currentType == 1) {
+      wasteType = "Organic";
+      lcd.clear();
+      lcd.print("Waste: Organic");
+      delay(2000);
+      lcd.clear();
+      lcd.print("Processing...");
+      servoSorter.write(POS_ORGANIC);
     } else {
-      servoPemilah.write(POS_TENGAH);
-      Serial.println("Servo posisi tengah (Unknown)");
+      wasteType = "Non-Organic";
+      lcd.clear();
+      lcd.print("Waste: Non-Org");
+      delay(2000);
+      lcd.clear();
+      lcd.print("Processing...");
+      servoSorter.write(POS_NONORGANIC);
     }
 
-    delay(1000); // beri waktu sampah jatuh
-    servoPemilah.write(POS_TENGAH);
+    delay(2000);
+    servoSorter.write(POS_CENTER);
+    delay(1000);
 
-    // baca kapasitas bak
-    lastDistBotol = readUltrasonic(TRIG_BOTOL, ECHO_BOTOL);
-    lastDistKresek = readUltrasonic(TRIG_KRESEK, ECHO_KRESEK);
-    float percentBotol = (MAX_HEIGHT - lastDistBotol) / MAX_HEIGHT * 100;
-    float percentKresek = (MAX_HEIGHT - lastDistKresek) / MAX_HEIGHT * 100;
+    // Update kapasitas
+    long distOrg = readUltrasonic(TRIG_ORGANIC, ECHO_ORGANIC);
+    long distNon = readUltrasonic(TRIG_NONORGANIC, ECHO_NONORGANIC);
+    organicCapacity = calcCapacity(distOrg);
+    inorganicCapacity = calcCapacity(distNon);
 
-    Serial.print("Kapasitas Botol: "); Serial.print(percentBotol); Serial.println("%");
-    Serial.print("Kapasitas Kresek: "); Serial.print(percentKresek); Serial.println("%");
+    lastTime = getTimestamp();
 
-    esp_camera_fb_return(fb);
+    lcd.clear();
+    lcd.print("Org:");
+    lcd.print(organicCapacity);
+    lcd.print("% Non:");
+    lcd.print(inorganicCapacity);
+    lcd.print("%");
+    delay(3000);
+
+    lcd.clear();
+    lcd.print("Thank you!");
+    delay(2000);
+
+    lcd.clear();
+    lcd.print("Insert trash");
+
+    // Geser ke urutan berikutnya
+    sequenceIndex++;
+    if (sequenceIndex >= 6) sequenceIndex = 0;
   }
-
-  delay(100);
 }
